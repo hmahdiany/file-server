@@ -1,4 +1,4 @@
-# Backbone File Server
+# HTTP File Server
 This project is a simple HTTP file server for upload and downloading Iso files which has been developed with Django.
 
 Here are Django commands to create this project:
