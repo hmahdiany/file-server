@@ -1,0 +1,15 @@
+### Django ###
+db.sqlite3
+iso/
+
+# Environments
+venv/
+file-env
+db-env 
+
+# Docker files
+Dockerfile
+docker-compose.yaml
+
+# K8s manifest
+file-server.yaml

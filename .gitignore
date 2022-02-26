@@ -1,0 +1,21 @@
+
+### Django ###
+db.sqlite3
+iso/
+
+# Static files
+static/
+
+#vscode cache
+__pycache__/
+
+# Environments
+venv/
+
+
+# Docker files
+
+
+# Git secret
+.gitsecret/keys/random_seed
+!*.secret

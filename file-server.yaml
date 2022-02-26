@@ -1,0 +1,370 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret-config
+  namespace: file-server
+type: Opaque
+stringData:
+  POSTGRES_DB: <database name>
+  POSTGRES_USER: <database username>
+  POSTGRES_PASSWORD: <database password>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-file-server-db
+  namespace: file-server
+spec:
+  ports:
+  - port: 5432
+    protocol: TCP
+    targetPort: 5432
+  selector:
+    app: postgres
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: file-server-db
+  namespace: file-server
+  labels:
+    app: file-server-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: file-server-db
+        image: postgres:14-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret-config
+              key: POSTGRES_DB
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret-config
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret-config
+              key: POSTGRES_PASSWORD
+        volumeMounts:
+        - mountPath: /var/lib/postgresql/data
+          name: postgres-pv-storage
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+      volumes:
+      - name: postgres-pv-storage
+        persistentVolumeClaim:
+          claimName: file-server-db-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-file-server-deployment
+  namespace: file-server
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 8000
+  selector:
+    app: file-server
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: file-server-deployment
+  namespace: file-server
+  labels:
+    app: file-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: file-server
+  template:
+    metadata:
+      labels:
+        app: file-server
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: tesla
+      containers:
+      - name: file-server
+        image: file-server:v0.1
+        ports:
+        - containerPort: 8000
+        env:
+        - name: DJANGO_SECRET_KEY
+          value: "<django secret key"
+        - name: DJANGO_DEBUG
+          value: "True"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret-config
+              key: POSTGRES_DB
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret-config
+              key: POSTGRES_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret-config
+              key: POSTGRES_PASSWORD
+        - name: DB_HOST
+          value: "svc-file-server-db"
+        volumeMounts:
+        - name: file-server
+          mountPath: /file-server/iso/media
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+      volumes:
+      - name: file-server
+        persistentVolumeClaim:
+          claimName: file-server-media-pvc
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: file-server-media-pv
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+  - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  claimRef:
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    name: file-server-media-pvc
+    namespace: file-server
+  local:
+    path: /mnt/file-server/iso/media
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - <hostname>
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: file-server-db-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  claimRef:
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    name: file-server-db-pvc
+    namespace: file-server
+  local:
+    path: /mnt/file-server/db
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - <hostname>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: file-server-media-pvc
+  namespace: file-server
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: local-storage
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: file-server-db-pvc
+  namespace: file-server
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-storage
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: file-server-nginx-config
+  namespace: file-server
+data:
+  htpasswd: |
+    <username>:<password>
+  nginx.conf: |
+          user  nginx;
+          worker_processes  auto;
+
+          error_log  /var/log/nginx/error.log notice;
+          pid        /var/run/nginx.pid;
+
+
+          events {
+            worker_connections  1024;
+          }
+
+
+          http {
+            include       /etc/nginx/mime.types;
+            default_type  application/octet-stream;
+
+            log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                              '$status $body_bytes_sent "$http_referer" '
+                              '"$http_user_agent" "$http_x_forwarded_for"';
+
+            access_log  /var/log/nginx/access.log  main;
+
+            sendfile        on;
+            #tcp_nopush     on;
+
+            keepalive_timeout  65;
+
+            #gzip  on;
+
+            include /etc/nginx/conf.d/*.conf;
+          }
+  file-server.conf: |
+          server {
+            listen 80;
+            server_name yourdomain.com;
+
+            location /media {
+              auth_basic "Administrator’s Area";
+              auth_basic_user_file /etc/nginx/htpasswd;
+              client_max_body_size 8192M;
+              proxy_pass http://svc-file-server-deployment;
+            }
+
+            location /file-server/iso/media {
+              try_files $uri =404;
+              alias /file-server/iso/media;
+            }
+
+            location = / {
+              return 301 /media;
+            }
+
+          }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: file-server-nginx
+  namespace: file-server
+spec:
+  selector:
+    matchLabels:
+      app: file-server-proxy
+  replicas: 1 
+  template:
+    metadata:
+      labels:
+        app: file-server-proxy
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: tesla
+      containers:
+      - name: file-server-proxy
+        image: nginx:1.21.6
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: htpasswd
+          mountPath: /etc/nginx/htpasswd
+          subPath: htpasswd
+          readOnly: true
+        - name: nginx-conf
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: file-server-conf
+          mountPath: /etc/nginx/conf.d/file-server.conf
+          subPath: file-server.conf
+          readOnly: true
+        - name: iso-files 
+          mountPath: /file-server/iso/media
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+      volumes:
+      - name: htpasswd
+        configMap:
+          name: file-server-nginx-config
+          items:
+          - key: htpasswd
+            path: htpasswd
+      - name: nginx-conf
+        configMap:
+          name: file-server-nginx-config
+          items:
+          - key: nginx.conf
+            path: nginx.conf
+      - name: file-server-conf
+        configMap:
+          name: file-server-nginx-config
+          items:
+          - key: file-server.conf
+            path: file-server.conf
+      - name: iso-files
+        persistentVolumeClaim:
+          claimName: file-server-media-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    metallb.universe.tf/address-pool: private-pool1
+  name: svc-file-server
+  namespace: file-server
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: file-server-proxy
+  type: LoadBalancer
